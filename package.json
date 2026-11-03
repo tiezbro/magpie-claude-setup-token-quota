@@ -1,12 +1,13 @@
 {
   "name": "magpie-claude-setup-token-quota",
   "version": "0.1.0",
-  "description": "A quota-only magpie provider that shows a Claude Pro setup-token account's 5h/7d allowance from Anthropic rate-limit headers.",
+  "description": "Quota-only Magpie plugin that shows a Claude Pro setup-token account's 5h/7d allowance from Anthropic rate-limit headers.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
     "index.mjs",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "docs"
   ],

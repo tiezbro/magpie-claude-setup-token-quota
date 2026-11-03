@@ -1,41 +1,85 @@
 # magpie-claude-setup-token-quota
 
-> A quota-only magpie provider that shows a Claude Pro **setup-token** account's
-> 5-hour and 7-day allowance on magpie's Usage page.
->
-> 一个只做额度展示的 magpie provider：把 Claude Pro setup-token 账号的 5h / 7d
-> 额度显示在 magpie 的 Usage 页面。
+Quota-only Magpie plugin for Claude Pro setup-token accounts
 
-![Usage card](docs/usage-card.png)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)](./package.json)
+[![Magpie plugin](https://img.shields.io/badge/Magpie-plugin-6E56CF?style=flat-square)](https://github.com/yetone/magpie)
+[![Claude setup-token](https://img.shields.io/badge/Claude-setup--token-D97757?style=flat-square)](https://code.claude.com/docs/en/authentication)
 
-![Provider row](docs/provider-row.png)
+[English](./README.md) | [中文](./README.zh-CN.md) | [Releases](https://github.com/tiezbro/magpie-claude-setup-token-quota/releases)
 
-## 背景
+This repository is a **Magpie plugin**. It is not a fork of Magpie and does
+not modify Magpie's core. It adds an independent, quota-only provider card for
+Claude Pro setup-token accounts.
 
-magpie 的内置 Claude 账号卡片依赖 Claude Code 自己的 `/usage` 来读取套餐额度。
-但 `claude setup-token` 生成的长期 token 只有：
+![Claude Setup Token card in Magpie's Usage page](./docs/usage-card.png)
 
-```text
-scope = user:inference
+Magpie's built-in Claude card already serves official Claude model requests.
+This plugin does not replace it. It adds a second card that answers one
+question: **how much of the setup-token account's 5-hour and 7-day allowance is
+left?**
+
+| | Built-in Claude card | This Magpie plugin |
+| --- | --- | --- |
+| Purpose | Official Claude model requests | Quota display only |
+| Data source | Claude Code `/usage` or a `rate_limit_event` | `anthropic-ratelimit-unified-*` response headers |
+| setup-token support | Usually unknown, or only a partial 5h reading | 5h and 7d |
+| Login | Magpie's saved Claude account | `magpie plugin login claude-setup-token` (paste token) |
+| Models | The official Claude models | **0 models** |
+| Routing | Serves Claude requests | Never receives model requests |
+| Magpie core changes | — | None |
+| Can hide the built-in card | — | No; this is a separate card |
+
+<!-- readme:positioning -->
+## What this product is
+
+`magpie-claude-setup-token-quota` is a small **Magpie provider plugin** written
+for Magpie's plugin host. It does not implement Claude inference and does not
+proxy model requests.
+
+It:
+
+- adds a provider named **Claude Setup Token**;
+- signs in with a `claude setup-token` token through Magpie's plugin auth;
+- calls Claude Code's shape of a minimal Anthropic request only for quota;
+- exposes no models, so Magpie never routes agent traffic to it;
+- leaves Magpie's built-in Claude account, `logins.json`, and `quotas.json`
+  untouched.
+
+It is **not** an official Magpie plugin and **not** an official Anthropic
+product. It is a community-maintained plugin that uses Anthropic's
+undocumented `anthropic-ratelimit-unified-*` response headers.
+
+> Community maintained. Not official Magpie support and not official Anthropic
+> support.
+
+<!-- readme:value -->
+## Why this plugin exists
+
+A Claude Pro subscription can be used through a long-lived token made by:
+
+```bash
+claude setup-token
 ```
 
-它不能调用 `/api/oauth/usage`：
+That token has only the inference scope:
 
 ```text
+user:inference
+```
+
+Anthropic's dedicated usage endpoint therefore rejects it:
+
+```text
+GET /api/oauth/usage
 403 permission_error: OAuth token does not meet scope requirement user:profile
 ```
 
-因此 magpie 内置卡片的 setup-token 账号通常只能显示：
-
-```text
-unknown: a setup-token can't read the allowance
-```
-
-或者只显示某次 `rate_limit_event` 带回来的 5h，7d 不完整。
-
-## 解决的场景
-
-Anthropic 的 `POST /v1/messages` 响应头里其实带有完整的统一额度：
+Magpie's built-in Claude card uses Claude Code's own `/usage` (or a
+`rate_limit_event`) for its numbers. With a setup-token account that leaves the
+card at `unknown`, or at a partial 5h reading, even though a normal model
+response contains the full unified limits in its headers:
 
 ```text
 anthropic-ratelimit-unified-5h-utilization
@@ -45,89 +89,75 @@ anthropic-ratelimit-unified-7d-utilization
 anthropic-ratelimit-unified-7d-reset
 anthropic-ratelimit-unified-7d-status
 anthropic-ratelimit-unified-overage-status
-...
 ```
 
-这个插件做的就是：
+This plugin reads those headers and turns them into a Magpie quota card.
 
-1. 用 setup-token 发一个 **1-token Haiku 请求**
-2. 从响应头读取 5h / 7d / status / overage
-3. 作为一个独立的 **Claude Setup Token** provider 卡片显示在 Usage 页面
-4. 5 分钟内复用缓存，避免频繁探针
-
-它不依赖 Claude OAuth 登录，不需要 refresh token，也不写 magpie 的
-`quotas.json`。
-
-## 截图
-
-### Usage 卡片
-
-![Usage card](docs/usage-card.png)
-
-显示：
-
-- 5h / 7d 剩余百分比和重置时间
-- 5h / 7d 状态
-- Overage 状态
-- Claude 图标
-- magpie 自动计算的 Pace / Cycle / Left over time
-
-### Providers 行
-
-![Provider row](docs/provider-row.png)
-
-这个 provider：
-
-- 只登录 setup-token
-- **0 个模型**
-- 不参与任何模型路由
-- 只提供额度卡片
-
-## 工作原理
-
-插件里的鉴权是 `type: "api"`，不是 Claude OAuth：
+<!-- readme:architecture -->
+## How it works
 
 ```text
-provider: claude-setup-token
-method:   Claude setup-token
+Magpie
+  -> provider plugin claude-setup-token
+       auth:   type "api", a setup-token in plugin-auth.json (0600)
+       usage:  one minimal Anthropic request
+                 model: claude-haiku-5-5
+                 max_tokens: 1
+                 Authorization: Bearer <setup-token>
+                 anthropic-beta: oauth-2025-04-20
+               read anthropic-ratelimit-unified-* response headers
+               return 5h / 7d windows + status / overage
+  -> Magpie Usage page
+       one card: Claude Setup Token
 ```
 
-`auth.usage` 运行：
+The probe is cached for 5 minutes. The card is not a model provider: it
+registers no models, is not in any routing group, and cannot receive Claude
+Code or agent requests. The only request that reaches its setup-token account
+is the small quota probe.
 
-```text
-POST https://api.anthropic.com/v1/messages
-Authorization: Bearer <setup-token>
-anthropic-version: 2023-06-01
-anthropic-beta: oauth-2025-04-20
-user-agent: claude-cli/2.1.317 (external, cli)
+The plugin does not:
 
-model: claude-haiku-5-5
-max_tokens: 1
-system: You are Claude Code, Anthropic's official CLI for Claude.
-```
+- use Claude Code OAuth login;
+- read or write `~/.claude/.credentials.json`;
+- refresh a token;
+- write `quotas.json`;
+- modify Magpie's built-in Claude card.
 
-然后读取 `anthropic-ratelimit-unified-*` 响应头并返回给 magpie。
+<!-- readme:requirements -->
+## Requirements
 
-## 安装
+- Magpie with provider-plugin support (tested with Magpie **0.1.2798** on
+  Linux)
+- A Claude subscription that can run `claude setup-token`
+- Network access from the Magpie host to `api.anthropic.com`
+- The setup-token itself; no browser login is needed after installation
 
-### 从 GitHub 安装
+## Quickstart
+
+### 1. Install the plugin
 
 ```bash
 magpie plugin add github:tiezbro/magpie-claude-setup-token-quota
-magpie plugin login claude-setup-token
-# 粘贴 claude setup-token 打印的 token
 ```
 
-### 从本地目录安装
+Or install a local checkout:
 
 ```bash
 magpie plugin add /path/to/magpie-claude-setup-token-quota
-magpie plugin login claude-setup-token
 ```
 
-## 使用
+### 2. Sign the plugin in with the setup-token
 
-安装并登录后：
+```bash
+claude setup-token
+magpie plugin login claude-setup-token
+# Paste the token printed by claude setup-token
+```
+
+The token is stored by Magpie in `plugin-auth.json` with mode `0600`.
+
+### 3. Open the Usage page
 
 ```bash
 magpie plugin list
@@ -135,45 +165,65 @@ magpie quota
 magpie accounts
 ```
 
-Usage 页面会出现一张独立的 **Claude Setup Token** 卡片。
+Open Magpie's **Usage** page. A separate **Claude Setup Token** card appears
+with 5h / 7d remaining, reset times, status, and overage state.
 
-这个 provider 没有模型，所以不会出现在模型选择器，也不会接收 Claude Code /
-agent 的模型请求。唯一访问它账号的请求是额度探针：
+<!-- readme:screenshots -->
+## Screenshots
 
-```text
-claude-haiku-5-5 · max_tokens 1 · 每 5 分钟最多一次
-```
+### Usage card
 
-## 与内置 Claude 卡片的关系
+![Usage card showing 5h and 7d allowance](./docs/usage-card.png)
 
-- 内置 Claude 卡片：magpie 自己的账号，负责官方模型请求
-- 本插件卡片：独立的额度展示 provider
-- 插件**不会**修改内置卡片，也**不能**隐藏内置卡片
-- 如果需要内置卡片本身显示完整 7d，只能改 magpie 本体或写它的内部缓存
+The card is drawn by Magpie like any other subscription card, including the
+Claude icon, reset times, pace, cycle, and the plugin's status/overage rows.
 
-## 限制
+### Provider row
 
-- 只有统一 5h / 7d 窗口
-- 不包含 Opus / Sonnet 独立 7d 窗口
-- 不包含 extra usage / credits 明细
-- 读不到邮箱和套餐名
-- 探针会消耗极小的订阅额度
-- 需要有效的 setup-token；token 失效后需要重新执行 `claude setup-token`
-  并重新登录插件
+![Claude Setup Token provider row with zero models](./docs/provider-row.png)
 
-## 安全
+The provider is signed in but exposes **0 models**, so it cannot receive model
+requests or participate in routing.
 
-- setup-token 保存在 magpie 的 `plugin-auth.json`，权限 `0600`
-- 仓库和 npm 包中不包含任何 token
-- 不要把 `plugin-auth.json`、`logins.json` 或浏览器里的 token 发到公开仓库
-- 如果 token 轮换，内置 Claude 账号和本插件都需要更新
+## Limitations
 
-## 开发
+- It shows the unified 5h and 7d windows only.
+- It does not show per-model weekly Opus / Sonnet buckets.
+- It does not show extra-usage or credits details.
+- It cannot read the account email or plan from the setup-token; this build
+  labels the plan `Pro`.
+- It cannot replace or hide Magpie's built-in Claude card. The built-in card
+  remains the official model path; a core patch would be required to make that
+  card show 7d for setup-token accounts.
+- Each uncached read costs one tiny Haiku request (about 1 output token).
+  The cache is 5 minutes.
+- If the token is revoked or rotated, both the built-in account (if used) and
+  this plugin's auth need the new token.
 
-- 运行时：magpie 的 Bun 插件宿主
-- 源码：`index.mjs`
-- 图标：`package.json` 的 `magpie.icon`（内嵌 Claude SVG）
-- 无需构建步骤
+## Security
+
+- `plugin-auth.json` is mode `0600`; the token is not part of this repository,
+  the npm tarball, or the screenshots.
+- The screenshots show only Magpie's masked key label (`API key …xxxx`).
+- Do not expose `plugin-auth.json`, `logins.json`, or a setup-token in a public
+  repository or chat.
+- Rotate the setup-token if it leaks.
+
+## Development
+
+- Runtime: Magpie's Bun plugin host.
+- Source: `index.mjs`.
+- No build step.
+- Icon: embedded Claude SVG in `package.json` (`magpie.icon`).
+- The plugin is a normal OpenCode-style provider plugin with Magpie's
+  `auth.usage` hook.
+
+## Compatibility
+
+- Tested with Magpie 0.1.2798 / Claude Code 2.1.317 on Linux.
+- Magpie updates do not remove a plugin installed from a local path or GitHub.
+- If Magpie changes the provider plugin API or the `auth.usage` contract, this
+  plugin may need an update.
 
 ## License
 
